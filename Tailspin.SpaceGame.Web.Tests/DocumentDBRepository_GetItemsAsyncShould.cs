@@ -4,84 +4,72 @@ using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
+using NUnit.Framework;
+using TailSpin.SpaceGame.Web;
 using TailSpin.SpaceGame.Web.Models;
 
-namespace TailSpin.SpaceGame.Web
+namespace Tests
 {
-    public class LocalDocumentDBRepository<T> : IDocumentDBRepository<T> where T : Model
+    public class DocumentDBRepository_GetItemsAsyncShould
     {
-        // An in-memory list of all items in the collection.
-        private readonly List<T> _items;
+        private IDocumentDBRepository<Score> _scoreRepository;
 
-        public LocalDocumentDBRepository(string fileName)
+        [SetUp]
+        public void Setup()
         {
-            // Serialize the items from the provided JSON document.
-            _items = JsonConvert.DeserializeObject<List<T>>(File.ReadAllText(fileName));
+            using (Stream scoresData = typeof(IDocumentDBRepository<Score>)
+                .Assembly
+                .GetManifestResourceStream("Tailspin.SpaceGame.Web.SampleData.scores.json"))
+            {
+                _scoreRepository = new LocalDocumentDBRepository<Score>(scoresData);
+            }
         }
 
-        public LocalDocumentDBRepository(Stream stream)
+        [TestCase("Milky Way")]
+        [TestCase("Andromeda")]
+        [TestCase("Pinwheel")]
+        [TestCase("NGC 1300")]
+        [TestCase("Messier 82")]
+        public void FetchOnlyRequestedGameRegion(string gameRegion)
         {
-            // Serialize the items from the provided JSON document.
-            _items = JsonConvert.DeserializeObject<List<T>>(new StreamReader(stream).ReadToEnd());
+            const int PAGE = 0; // take the first page of results
+            const int MAX_RESULTS = 10; // sample up to 10 results
+
+            // Form the query predicate.
+            // This expression selects all scores for the provided game region.
+            Expression<Func<Score, bool>> queryPredicate = score => (score.GameRegion == gameRegion);
+
+            // Fetch the scores.
+            Task<IEnumerable<Score>> scoresTask = _scoreRepository.GetItemsAsync(
+                queryPredicate, // the predicate defined above
+                score => 1, // we don't care about the order
+                PAGE,
+                MAX_RESULTS
+            );
+            IEnumerable<Score> scores = scoresTask.Result;
+
+            // Verify that each score's game region matches the provided game region.
+            Assert.That(scores, Is.All.Matches<Score>(score => score.GameRegion == gameRegion));
         }
 
-        /// <summary>
-        /// Retrieves the item from the store with the given identifier.
-        /// </summary>
-        /// <returns>
-        /// A task that represents the asynchronous operation.
-        /// The task result contains the retrieved item.
-        /// </returns>
-        /// <param name="id">The identifier of the item to retrieve.</param>
-        public Task<T> GetItemAsync(string id)
+        [TestCase(0, ExpectedResult = 0)]
+        [TestCase(1, ExpectedResult = 1)]
+        [TestCase(10, ExpectedResult = 10)]
+        public int ReturnRequestedCount(int count)
         {
-            return Task<T>.FromResult(_items.Single(item => item.Id == id));
-        }
+            const int PAGE = 0; // take the first page of results
 
-        /// <summary>
-        /// Retrieves items from the store that match the given query predicate.
-        /// Results are given in descending order by the given ordering predicate.
-        /// </summary>
-        /// <returns>
-        /// A task that represents the asynchronous operation.
-        /// The task result contains the collection of retrieved items.
-        /// </returns>
-        /// <param name="queryPredicate">Predicate that specifies which items to select.</param>
-        /// <param name="orderDescendingPredicate">Predicate that specifies how to sort the results in descending order.</param>
-        /// <param name="page">The 1-based page of results to return.</param>
-        /// <param name="pageSize">The number of items on a page.</param>
-        public Task<IEnumerable<T>> GetItemsAsync(
-            Expression<Func<T, bool>> queryPredicate,
-            Expression<Func<T, int>> orderDescendingPredicate,
-            int page = 1, int pageSize = 10
-        )
-        {
-            var result = _items.AsQueryable()
-                .Where(queryPredicate) // filter
-                .OrderByDescending(orderDescendingPredicate) // sort
-                .Skip(page * pageSize) // find page
-                .Take(pageSize) // take items
-                .AsEnumerable(); // make enumeratable
+            // Fetch the scores.
+            Task<IEnumerable<Score>> scoresTask = _scoreRepository.GetItemsAsync(
+                score => true, // return all scores
+                score => 1, // we don't care about the order
+                PAGE,
+                count // fetch this number of results
+            );
+            IEnumerable<Score> scores = scoresTask.Result;
 
-            return Task<IEnumerable<T>>.FromResult(result);
-        }
-
-        /// <summary>
-        /// Retrieves the number of items that match the given query predicate.
-        /// </summary>
-        /// <returns>
-        /// A task that represents the asynchronous operation.
-        /// The task result contains the number of items that match the query predicate.
-        /// </returns>
-        /// <param name="queryPredicate">Predicate that specifies which items to select.</param>
-        public Task<int> CountItemsAsync(Expression<Func<T, bool>> queryPredicate)
-        {
-            var count = _items.AsQueryable()
-                .Where(queryPredicate) // filter
-                .Count(); // count
-
-            return Task<int>.FromResult(count);
+            // Verify that we received the specified number of items.
+            return scores.Count();
         }
     }
 }
